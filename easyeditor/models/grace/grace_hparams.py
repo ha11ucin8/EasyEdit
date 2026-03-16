@@ -32,6 +32,7 @@ class GraceHyperParams(HyperParams):
     batch_size: int = 1
     max_length: int = 30
     model_parallel: bool = False
+    fp16: bool = True
 
     @classmethod
     def from_hparams(cls, hparams_name_or_path: str):
