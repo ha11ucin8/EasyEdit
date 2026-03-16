@@ -1,5 +1,5 @@
 alg_name: "WISE"
-model_name: "./hugging_cache/Qwen2.5-7b-Instruct"
+model_name: "./hugging_cache/qwen2.5-7b-instruct"
 device: 0
 
 mask_ratio: 0.2
@@ -15,6 +15,8 @@ objective_optimization: 'only_label'
 inner_params:
 - model.layers[23].mlp.down_proj.weight
 
+sequential_edit: True
+fp16: True
 
 ## alternative: WISE-Merge, WISE-Retrieve
 
@@ -27,4 +29,4 @@ retrieve: True
 replay: False # True --> will replay the past editing instances: see https://arxiv.org/abs/2405.14768 Appendix B.3
 
 model_parallel: False
-use_chat_template: True
+# use_chat_template: True

@@ -37,6 +37,8 @@ class WISEHyperParams(HyperParams):
     max_length: int = 30
     model_parallel: bool = False
     use_chat_template: bool = False
+    fp16: bool = True
+    sequential_edit: bool = True
 
     # Save and Load
     save_path: str = None
