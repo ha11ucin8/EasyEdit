@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import os.path
 import sys
 import json
@@ -16,6 +17,8 @@ from easyeditor import (
 )
 
 if __name__ == "__main__":
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--editing_method', required=True, type=str)
     parser.add_argument('--hparams_dir', required=True, type=str)
@@ -46,14 +49,14 @@ if __name__ == "__main__":
     K = args.ds_size
 
     if args.data_type == 'ZsRE':
-        edit_data = json.load(open(f'{args.data_dir}/{args.data_type}/zsre_mend_edit.json', 'r', encoding='utf-8'))[:K]
-        loc_data = json.load(open(f'{args.data_dir}/{args.data_type}/zsre_mend_train.json', 'r', encoding='utf-8'))[:K]
+        edit_data = json.load(open(f'{args.data_dir}/{args.data_type}/zsre_edit_data.json', 'r', encoding='utf-8'))[:K]
+        loc_data = json.load(open(f'{args.data_dir}/{args.data_type}/zsre_train_data.json', 'r', encoding='utf-8'))[:K]
         loc_prompts = [edit_data_['loc'] + ' ' + edit_data_['loc_ans'] for edit_data_ in loc_data]
 
         prompts = [edit_data_['src'] for edit_data_ in edit_data]
         subject = [edit_data_['subject'] for edit_data_ in edit_data]
         rephrase_prompts = [edit_data_['rephrase'] for edit_data_ in edit_data]
-        target_new = [edit_data_['alt'] for edit_data_ in edit_data]
+        target_new = [edit_data_['answers'][0] for edit_data_ in edit_data]
         locality_prompts = [edit_data_['loc'] for edit_data_ in edit_data]
         locality_ans = [edit_data_['loc_ans'] for edit_data_ in edit_data]
         locality_inputs = {
@@ -113,6 +116,8 @@ if __name__ == "__main__":
         'temporal': 'ood_ppl'
     }
 
+    log_file_prefix = f'{args.data_type}_{hparams.model_name.split("/")[-1]}_{args.editing_method}_N={args.ds_size}_Sequential={args.sequential_edit}_{timestamp}'
+
     editor = BaseEditor.from_hparams(hparams)
     metrics, edited_model, _ = editor.edit(
         prompts=prompts,
@@ -122,7 +127,9 @@ if __name__ == "__main__":
         subject=subject,
         locality_inputs=locality_inputs,
         sequential_edit=args.sequential_edit,
-        eval_metric=eval_metric[args.data_type]
+        eval_metric=eval_metric[args.data_type],
+        log_file_prefix=log_file_prefix,
+        total_ds_size=args.ds_size,
     )
 
     with open(output_file, 'w') as f:

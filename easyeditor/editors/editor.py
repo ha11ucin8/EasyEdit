@@ -1,3 +1,4 @@
+import copy
 from typing import Optional, Union, List, Tuple, Dict
 from time import time
 from tqdm import tqdm
@@ -11,7 +12,7 @@ from transformers import LlamaTokenizer,PreTrainedTokenizerFast, LlamaTokenizerF
 from transformers import T5ForConditionalGeneration, T5Tokenizer
 from transformers import GPT2TokenizerFast, GPT2Tokenizer
 from ..util.globals import *
-from .utils import _chunks, _prepare_requests, summary_metrics
+from .utils import _chunks, _prepare_requests, summary_metrics, summary_metrics_
 from .batch_editor import BatchEditor
 from ..evaluate import compute_edit_quality, compute_icl_edit_quality, compute_sent_metric
 from ..util import nethook
@@ -63,6 +64,8 @@ class BaseEditor:
         if type(self.model_name) is str:
             device_map = 'auto' if hparams.model_parallel else None
             torch_dtype = torch.float16 if hasattr(hparams, 'fp16') and hparams.fp16 else torch.float32
+            if hasattr(hparams, 'fp16') and hparams.fp16 and "oss" in self.model_name.lower():
+                torch_dtype = torch.bfloat16
             
             # QLoRA configuration
             if hparams.alg_name == 'QLoRA':
@@ -90,11 +93,19 @@ class BaseEditor:
                 self.model, self.tok = None, None
                 self.hparams = hparams
                 return
+            elif "oss" in self.model_name.lower():
+                self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+                self.tok = AutoTokenizer.from_pretrained(self.model_name, **model_kwargs)
+                self.tok.pad_token_id = self.tok.eos_token_id
             elif 'gpt-3.5' in self.model_name.lower():
                 self.model, self.tok = None, None
             elif 'gpt' in self.model_name.lower():
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
                 self.tok = GPT2Tokenizer.from_pretrained(self.model_name)
+                self.tok.pad_token_id = self.tok.eos_token_id
+            elif "deepseek" in self.model_name.lower():
+                self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
+                self.tok = AutoTokenizer.from_pretrained(self.model_name)
                 self.tok.pad_token_id = self.tok.eos_token_id
             elif 'llama' in self.model_name.lower():
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **model_kwargs)
@@ -165,6 +176,8 @@ class BaseEditor:
             for locality
         """
         test_generation = kwargs.pop('test_generation', False)
+        log_file_prefix = kwargs.pop('log_file_prefix', "")
+        total_ds_size = kwargs.pop('total_ds_size', 1000)
 
         if isinstance(prompts, List):
             assert len(prompts) == len(target_new)
@@ -184,7 +197,7 @@ class BaseEditor:
         else:
             requests = _prepare_requests(prompts, target_new, ground_truth, target_neg, rephrase_prompts, locality_inputs, portability_inputs, **kwargs)
 
-        return self.edit_requests(requests, sequential_edit, verbose, test_generation=test_generation, **kwargs)
+        return self.edit_requests(requests, sequential_edit, verbose, test_generation=test_generation, log_file_prefix=log_file_prefix, total_ds_size=total_ds_size, **kwargs)
 
     def batch_edit(self,
                    prompts: List[str],
@@ -293,6 +306,8 @@ class BaseEditor:
              sequential_edit=False,
              verbose=True,
              test_generation=False,
+             log_file_prefix="",
+             total_ds_size=1000,
              **kwargs
              ):
         """
@@ -303,6 +318,7 @@ class BaseEditor:
         `locality_inputs`: dict
             for locality
         """
+        exp_start = time()
         eval_metric= kwargs['eval_metric'] if 'eval_metric' in kwargs.keys() else 'exact match'
         if hasattr(self.hparams, 'batch_size'):  # For Singleton Editing, bs=1
             assert self.hparams.batch_size == 1, 'Single Editing: batch_size should be set to 1'
@@ -382,9 +398,26 @@ class BaseEditor:
                 LOG.info(f"{idx} editing: {request['prompt']} -> {request['target_new']}  \n\n {all_metrics[idx]}")
 
 
+        custom_metric_periods = [1, 10, 30, 120, 100, 500] if total_ds_size <= 1000 else [5000]
+        metric_period = 1000 if total_ds_size > 1000 else 2000
         if sequential_edit:
+            tot_edit = 0
             for i, request in enumerate(tqdm(requests, total=len(requests))):
+                edit_start = time()
                 edited_model, weights_copy, icl_examples = edit_func(request)
+                tot_edit += time() - edit_start
+
+                if (i+1) in custom_metric_periods or (i+1) % metric_period == 0:
+                    all_metrics_phase = copy.deepcopy(all_metrics[:i+1])
+                    inference_start = time()
+                    for j, request in enumerate(tqdm(requests[:i+1], total=len(requests[:i+1]))):
+                        edit_evaluation(all_metrics_phase, request, edited_model, j, test_generation, icl_examples, **kwargs)
+                    # three inferece calculations
+                    inference_time = (time() - inference_start)/3
+                    num_of_trainable_params = sum(p.numel() for p in edited_model.parameters() if p.requires_grad)
+                    summary_metrics_(all_metrics_phase, ds_size=i+1, start_time=exp_start, total_edit_time=tot_edit, inference_time=inference_time, num_of_trainable_params=num_of_trainable_params, log_file_prefix=log_file_prefix)
+
+
             if self.alg_name == 'LoRA' or self.alg_name == 'QLoRA' or self.alg_name == 'DPO':
                 self.model = edited_model
             if self.alg_name == 'WISE' and hasattr(self.hparams, 'save_path') and self.hparams.save_path:

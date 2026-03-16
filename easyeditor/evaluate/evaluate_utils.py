@@ -238,6 +238,7 @@ def test_prediction_acc(model, tok, hparams, prompts, targets, device, locality=
             prompts, targets = [prompts, ], [targets, ]
         results = []
         for prompt, target_new in zip(prompts, targets):
+            target_new_with_space_tokens = tok.encode(" " + target_new, add_special_tokens=False)
             target_new_tokens = tok.encode(target_new, add_special_tokens=False)
             prompt_tok = tok(
                 prompt,
@@ -246,15 +247,27 @@ def test_prediction_acc(model, tok, hparams, prompts, targets, device, locality=
             gen_token = model.generate(
                 input_ids=prompt_tok['input_ids'],
                 attention_mask=prompt_tok['attention_mask'],
-                max_new_tokens=len(target_new_tokens),
+                max_new_tokens=len(target_new_with_space_tokens),
                 pad_token_id=tok.eos_token_id,
                 do_sample=False,
                 use_cache=False,
             )
+            gen_tokens = gen_token[0]
+            # obtain the answer text
+            ans_tokens = gen_tokens[prompt_tok["input_ids"].shape[1] :]
+            answer_text = tok.decode(ans_tokens, skip_special_tokens=True)
+            # remove the possible " "
+            answer_text = answer_text.lstrip()
+            ans_tokens_list = tok.encode(answer_text, add_special_tokens=False)
+            ans_tokens_list = ans_tokens_list[: len(target_new_tokens)]
+
             if locality:
                 results.append(gen_token.detach().cpu().numpy().tolist()[0][-len(target_new_tokens):])
             else:
-                results.append(np.mean(np.equal(target_new_tokens, gen_token.detach().cpu().numpy().tolist()[0][-len(target_new_tokens):])))
+                acc = np.mean(np.equal(target_new_tokens, ans_tokens_list)) if len(target_new_tokens) == len(ans_tokens_list) else 0
+                if math.isnan(acc):
+                    acc = 1
+                results.append(acc)
         return results
 
     if isinstance(prompts, str):
