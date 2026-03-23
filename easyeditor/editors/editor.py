@@ -399,7 +399,7 @@ class BaseEditor:
 
 
         custom_metric_periods = [1, 10, 30, 120, 100, 500] if total_ds_size <= 1000 else [5000]
-        metric_period = 1000 if total_ds_size > 1000 else 2000
+        metric_period = 1000 if total_ds_size < 4000 else 2000
         if sequential_edit:
             tot_edit = 0
             for i, request in enumerate(tqdm(requests, total=len(requests))):
