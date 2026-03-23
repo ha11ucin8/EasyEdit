@@ -128,7 +128,7 @@ class BaseEditor:
                 self.tok.pad_token_id = self.tok.eos_token_id
             elif 'qwen2' in self.model_name.lower():
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_name,trust_remote_code=True, torch_dtype=torch_dtype if hparams.alg_name not in ['MEND'] else torch.bfloat16, device_map=device_map)
-                self.tok = AutoTokenizer.from_pretrained(self.model_name, eos_token='<|endoftext|>', pad_token='<|endoftext|>',unk_token='<|endoftext|>', trust_remote_code=True)
+                self.tok = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
                 self.tok.pad_token_id = self.tok.eos_token_id
             elif 'qwen' in self.model_name.lower():
                 self.model = AutoModelForCausalLM.from_pretrained(self.model_name,fp32=False,trust_remote_code=True, **model_kwargs)
