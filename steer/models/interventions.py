@@ -183,6 +183,7 @@ class VectorIntervention(BaseIntervention, torch.nn.Module):
         self.intervention_positions_dropout = kwargs.get("intervention_positions_dropout", 0.0)
         self.subspaces = None
         self.intervention_locations = None
+        self.multiplier = kwargs.get("multiplier", None)
         # initialize the bias of the projection layer to 0
         with torch.no_grad():
             self.proj.bias.fill_(0)
@@ -238,7 +239,9 @@ class VectorIntervention(BaseIntervention, torch.nn.Module):
             dropout_mask = torch.rand_like(combined_steering_factor.float()) > self.intervention_positions_dropout
             combined_steering_factor *= dropout_mask
             steering_vec = steering_vec * combined_steering_factor # bs, s, d
-
+        elif self.multiplier is not None:
+            steering_vec = self.multiplier * steering_vec
+        
         modified_activations = activations_to_intervene + steering_vec
 
         if self.intervention_locations is not None:
@@ -298,59 +301,7 @@ class LoraIntervention(BaseIntervention, torch.nn.Module):
             # print(f"Applying multiplier {self.multiplier} in PreferenceLoraIntervention")
             lora_weights = self.multiplier * lora_weights
     
-        lora_output = self.lora_dropout(original_input @ lora_weights)
-        # --- 稳健投影与调试代码（替换你原来那段） ---
-        if self.ablation_vector is not None:
-            # ensure on same device
-            device = lora_output.device
-            # cast ablation vector to float32 for stable computation
-            u = self.ablation_vector.to(device)
-            # keep original dtype for final cast if you want
-            orig_dtype = lora_output.dtype
-
-            # reshape to (1,1,dim)
-            if u.dim() == 1:
-                u = u.view(1, 1, -1)
-
-            if u.shape[-1] != lora_output.shape[-1]:
-                raise ValueError(f"Dimension mismatch: ablation_vector has dimension {u.shape[-1]}, but lora_output has dimension {lora_output.shape[-1]}")
-
-            # Cast to float32 for stable arithmetic (especially if lora_output is float16)
-            u32 = u.to(torch.float32)
-            v32 = lora_output.to(torch.float32)
-
-            # diagnostics before projection
-            dot_before = torch.sum(v32 * u32, dim=-1)              # shape (B, S)
-            max_dot_before = dot_before.abs().max().item()
-            u_norm_sq = torch.sum(u32 * u32, dim=-1, keepdim=True) # shape (1,1,1)
-            u_norm = torch.sqrt(u_norm_sq)
-            u_norm_sq_item = u_norm_sq.view(-1).item()
-
-            print(f"[proj debug] dtype lora_output={orig_dtype}, using float32 for proj")
-            print(f"[proj debug] max |dot_before| = {max_dot_before:.6e}")
-            print(f"[proj debug] u_norm_sq = {u_norm_sq_item:.6e}, u_norm = {u_norm.view(-1).item():.6e}")
-
-            eps = 1e-8
-            if u_norm_sq_item > eps:
-                # compute projection in float32
-                proj_coeff = (dot_before.unsqueeze(-1) / (u_norm_sq + 1e-12))  # shape (B, S, 1)
-                projection32 = proj_coeff * u32                              # shape (B, S, D)
-                v32_proj = v32 - projection32
-
-                # diagnostics after
-                dot_after = torch.sum(v32_proj * u32, dim=-1)  # shape (B, S)
-                max_dot_after = dot_after.abs().max().item()
-                proj_norm = projection32.view(projection32.shape[0], -1).norm(dim=-1).max().item()
-                v_norm = v32.view(v32.shape[0], -1).norm(dim=-1).max().item()
-
-                print(f"[proj debug] max |dot_after| = {max_dot_after:.6e}")
-                print(f"[proj debug] max projection norm = {proj_norm:.6e}, max v norm = {v_norm:.6e}")
-
-                # cast back to original dtype
-                lora_output = v32_proj.to(orig_dtype)
-            else:
-                print("[proj debug] u_norm_sq too small, skipping projection.")
-                # keep lora_output unchanged
+        lora_output = self.lora_dropout(original_input @ lora_weights.to(original_input.device))
 
         output = base + lora_output.to(base.dtype)
         
@@ -407,59 +358,7 @@ class LocalWeightIntervention(BaseIntervention, torch.nn.Module):
         delta_output = original_input @ delta_weights
         delta_output = delta_output + delta_bias
         delta_output = self.lora_dropout(delta_output)
-        # --- 稳健投影与调试代码（替换你原来那段） ---
-        if self.ablation_vector is not None:
-            # ensure on same device
-            device = delta_output.device
-            # cast ablation vector to float32 for stable computation
-            u = self.ablation_vector.to(device)
-            # keep original dtype for final cast if you want
-            orig_dtype = delta_output.dtype
-
-            # reshape to (1,1,dim)
-            if u.dim() == 1:
-                u = u.view(1, 1, -1)
-
-            if u.shape[-1] != delta_output.shape[-1]:
-                raise ValueError(f"Dimension mismatch: ablation_vector has dimension {u.shape[-1]}, but lora_output has dimension {lora_output.shape[-1]}")
-
-            # Cast to float32 for stable arithmetic (especially if lora_output is float16)
-            u32 = u.to(torch.float32)
-            v32 = delta_output.to(torch.float32)
-
-            # diagnostics before projection
-            dot_before = torch.sum(v32 * u32, dim=-1)              # shape (B, S)
-            max_dot_before = dot_before.abs().max().item()
-            u_norm_sq = torch.sum(u32 * u32, dim=-1, keepdim=True) # shape (1,1,1)
-            u_norm = torch.sqrt(u_norm_sq)
-            u_norm_sq_item = u_norm_sq.view(-1).item()
-
-            print(f"[proj debug] dtype delta_output={orig_dtype}, using float32 for proj")
-            print(f"[proj debug] max |dot_before| = {max_dot_before:.6e}")
-            print(f"[proj debug] u_norm_sq = {u_norm_sq_item:.6e}, u_norm = {u_norm.view(-1).item():.6e}")
-
-            eps = 1e-8
-            if u_norm_sq_item > eps:
-                # compute projection in float32
-                proj_coeff = (dot_before.unsqueeze(-1) / (u_norm_sq + 1e-12))  # shape (B, S, 1)
-                projection32 = proj_coeff * u32                              # shape (B, S, D)
-                v32_proj = v32 - projection32
-
-                # diagnostics after
-                dot_after = torch.sum(v32_proj * u32, dim=-1)  # shape (B, S)
-                max_dot_after = dot_after.abs().max().item()
-                proj_norm = projection32.view(projection32.shape[0], -1).norm(dim=-1).max().item()
-                v_norm = v32.view(v32.shape[0], -1).norm(dim=-1).max().item()
-
-                print(f"[proj debug] max |dot_after| = {max_dot_after:.6e}")
-                print(f"[proj debug] max projection norm = {proj_norm:.6e}, max v norm = {v_norm:.6e}")
-
-                # cast back to original dtype
-                lora_output = v32_proj.to(orig_dtype)
-            else:
-                print("[proj debug] u_norm_sq too small, skipping projection.")
-                # keep lora_output unchanged
-
+        
         output = base + delta_output.to(base.dtype)
         
         return InterventionOutput(
