@@ -50,8 +50,10 @@ def apply_sft(hparams: ApplySFTHyperParams, pipline=None, vector=None):
         from ...models.interventions import LocalWeightIntervention
 
         if hparams.intervention_method=="vector":
-            if concept_id < data_states.shape[0]:
-                steering_vector = data_states[concept_id]
+            if concept_id < data_states.shape[0] and len(data_states.shape) == 2:
+                steering_vector = data_states[concept_id].to(device)
+            elif len(data_states.shape) == 1:
+                steering_vector = data_states.to(device)
             else:
                 raise ValueError(f"Concept ID {concept_id} exceeds the number of vectors available: {steering_vector.shape[0]}")
             
